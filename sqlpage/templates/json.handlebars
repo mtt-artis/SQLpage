@@ -1,0 +1,12 @@
+{{~#if (not first)~}}[{{~/if~}}
+{{~#each_row~}}
+    {{~#if ../first~}}
+        {{~#if (eq @row_index 0)~}}
+            {{{stringify this}}}
+        {{~/if~}}
+    {{~else~}}
+        {{~#if (gt @row_index 0)}},{{/if~}}
+        {{{stringify this}}}
+    {{~/if~}}
+{{~/each_row~}}
+{{~#if (not first)~}}]{{~/if~}}

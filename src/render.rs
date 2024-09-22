@@ -59,7 +59,7 @@ impl<'a, W: std::io::Write> HeaderContext<W> {
             Some("status_code") => self.status_code(&data).map(PageContext::Header),
             Some("http_header") => self.add_http_header(&data).map(PageContext::Header),
             Some("redirect") => self.redirect(&data).map(PageContext::Close),
-            Some("json") => self.json(&data).map(PageContext::Close),
+            Some("json") => self.json(data).await,
             Some("cookie") => self.add_cookie(&data).map(PageContext::Header),
             Some("authentication") => self.authentication(data).await,
             _ => self.start_body(data).await,
@@ -187,18 +187,27 @@ impl<'a, W: std::io::Write> HeaderContext<W> {
     }
 
     /// Answers to the HTTP request with a single json object
-    fn json(mut self, data: &JsonValue) -> anyhow::Result<HttpResponse> {
-        let contents = data
-            .get("contents")
-            .with_context(|| "Missing 'contents' property for the json component")?;
-        let json_response = if let Some(s) = contents.as_str() {
-            s.as_bytes().to_owned()
-        } else {
-            serde_json::to_vec(contents)?
-        };
+    async fn json(mut self, data: JsonValue) -> anyhow::Result<PageContext<W>> {
         self.response
             .insert_header((header::CONTENT_TYPE, "application/json"));
-        Ok(self.response.body(json_response))
+        match data.get("contents") {
+            Some(contents) => {
+                let json_response = if let Some(s) = contents.as_str() {
+                    s.as_bytes().to_owned()
+                } else {
+                    serde_json::to_vec(contents)?
+                };
+
+                let page_content = self.response.body(json_response);
+                Ok(PageContext::Close(page_content))
+            }
+            None => {
+                self.request_context.is_embedded = true;
+                let page_content = self.start_body(data).await?;
+
+                Ok(page_content)
+            }
+        }
     }
 
     async fn authentication(mut self, mut data: JsonValue) -> anyhow::Result<PageContext<W>> {
@@ -375,13 +384,16 @@ impl<W: std::io::Write> RenderContext<W> {
             (
                 _,
                 Some(
-                    component_name @ ("status_code" | "http_header" | "redirect" | "json"
+                    component_name @ ("status_code" | "http_header" | "redirect"
                     | "cookie" | "authentication"),
                 ),
             ) => {
                 bail!("The {component_name} component cannot be used after data has already been sent to the client's browser. \
                 This component must be used before any other component. \
                 To fix this, either move the call to the '{component_name}' component to the top of the SQL file, or create a new SQL file where '{component_name}' is the first component.");
+            }
+            (Some("json"), Some(_)) => {
+                bail!("No component can be used after the json compoent")
             }
             (_, Some(c)) if Self::is_shell_component(c) => {
                 bail!("There cannot be more than a single shell per page. \n\
